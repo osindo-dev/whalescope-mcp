@@ -381,7 +381,11 @@ describe("checkEntryAlertForSymbol", () => {
     await checkEntryAlertForSymbol("BTCUSDT", ENV, 1_000_000);
 
     expect(telegram.sendTelegramAlert).not.toHaveBeenCalled();
-    expect(d1Client.upsertEntryAlertState).toHaveBeenCalledWith({ symbol: "BTCUSDT", lastDecision: "WATCH/DCA_NO_TRADE/TRAD_NO_TRADE", lastAlertAt: null });
+    expect(d1Client.upsertEntryAlertState).toHaveBeenCalledWith({
+      symbol: "BTCUSDT",
+      lastDecision: "WATCH_MUTED/DCA_NO_TRADE/TRAD_NO_TRADE",
+      lastAlertAt: null,
+    });
   });
 
   it("does not alert on HIGH_RISK WATCH below the 50 floor (no risk-status bypass)", async () => {
@@ -391,6 +395,85 @@ describe("checkEntryAlertForSymbol", () => {
     await checkEntryAlertForSymbol("BTCUSDT", ENV, 1_000_000);
 
     expect(telegram.sendTelegramAlert).not.toHaveBeenCalled();
+    expect(d1Client.upsertEntryAlertState).toHaveBeenCalledWith({
+      symbol: "BTCUSDT",
+      lastDecision: "WATCH_MUTED/DCA_NO_TRADE/TRAD_NO_TRADE",
+      lastAlertAt: null,
+    });
+  });
+
+  it("alerts HIGH_RISK WATCH at/above the TRADE threshold as its own category, not TRADE", async () => {
+    vi.mocked(fullPipeline.runTriplePipelineForSymbol).mockResolvedValue(dual(lowScoreWatchResult("BTCUSDT", "HIGH_RISK", 72)));
+    vi.mocked(d1Client.getEntryAlertState).mockResolvedValue(null);
+
+    await checkEntryAlertForSymbol("BTCUSDT", ENV, 1_000_000);
+
+    expect(telegram.sendTelegramAlert).toHaveBeenCalledTimes(1);
+    const msg = vi.mocked(telegram.sendTelegramAlert).mock.calls[0][1];
+    expect(msg).toContain("⚠️");
+    expect(msg).toContain("GRID HIGH\\_RISK");
+    expect(msg).toContain("jangan eksekusi");
+    expect(msg).not.toContain("GRID TRADE");
+    expect(d1Client.upsertEntryAlertState).toHaveBeenCalledWith({
+      symbol: "BTCUSDT",
+      lastDecision: "WATCH_HIGH_RISK/DCA_NO_TRADE/TRAD_NO_TRADE",
+      lastAlertAt: 1_000_000,
+    });
+  });
+
+  it("alerts when WATCH climbs from muted (<50) into the HQ band even if the engine label stays WATCH", async () => {
+    vi.mocked(fullPipeline.runTriplePipelineForSymbol).mockResolvedValue(dual(watchResult("BTCUSDT")));
+    vi.mocked(d1Client.getEntryAlertState).mockResolvedValue({
+      symbol: "BTCUSDT",
+      lastDecision: "WATCH_MUTED/DCA_NO_TRADE/TRAD_NO_TRADE",
+      lastAlertAt: null,
+    });
+
+    await checkEntryAlertForSymbol("BTCUSDT", ENV, 1_000_000);
+
+    expect(telegram.sendTelegramAlert).toHaveBeenCalledTimes(1);
+    expect(d1Client.upsertEntryAlertState).toHaveBeenCalledWith({
+      symbol: "BTCUSDT",
+      lastDecision: "WATCH/DCA_NO_TRADE/TRAD_NO_TRADE",
+      lastAlertAt: 1_000_000,
+    });
+  });
+
+  it("heals legacy D1 rows that stored WATCH without ever sending (lastAlertAt null)", async () => {
+    vi.mocked(fullPipeline.runTriplePipelineForSymbol).mockResolvedValue(dual(watchResult("BTCUSDT")));
+    vi.mocked(d1Client.getEntryAlertState).mockResolvedValue({
+      symbol: "BTCUSDT",
+      lastDecision: "WATCH/DCA_NO_TRADE/TRAD_NO_TRADE",
+      lastAlertAt: null,
+    });
+
+    await checkEntryAlertForSymbol("BTCUSDT", ENV, 1_000_000);
+
+    expect(telegram.sendTelegramAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("alerts when DCA_WATCH climbs from below the Telegram floor into the dispatch band", async () => {
+    const dca = { ...stubDca("BTCUSDT", "DCA_WATCH"), confidence: 70 };
+    vi.mocked(fullPipeline.runTriplePipelineForSymbol).mockResolvedValue({
+      grid: noTradeResult("BTCUSDT"),
+      dca,
+      trad: stubTrad(),
+      dcaSm: null,
+    });
+    vi.mocked(d1Client.getEntryAlertState).mockResolvedValue({
+      symbol: "BTCUSDT",
+      lastDecision: "NO_TRADE/DCA_WATCH_MUTED/TRAD_NO_TRADE",
+      lastAlertAt: null,
+    });
+
+    await checkEntryAlertForSymbol("BTCUSDT", ENV, 1_000_000);
+
+    expect(telegram.sendTelegramAlert).toHaveBeenCalledTimes(1);
+    expect(d1Client.upsertEntryAlertState).toHaveBeenCalledWith({
+      symbol: "BTCUSDT",
+      lastDecision: "NO_TRADE/DCA_WATCH/TRAD_NO_TRADE",
+      lastAlertAt: 1_000_000,
+    });
   });
 
   it("does not alert on WATCH with a mid-band score that used to fire (40-49)", async () => {
@@ -433,6 +516,11 @@ describe("checkEntryAlertForSymbol", () => {
     await checkEntryAlertForSymbol("BTCUSDT", ENV, 1_000_000);
 
     expect(telegram.sendTelegramAlert).not.toHaveBeenCalled();
+    expect(d1Client.upsertEntryAlertState).toHaveBeenCalledWith({
+      symbol: "BTCUSDT",
+      lastDecision: "NO_TRADE/DCA_WATCH_MUTED/TRAD_NO_TRADE",
+      lastAlertAt: null,
+    });
   });
 
   it("alerts legacy DCA_WATCH at the Telegram floor (confidence 65)", async () => {

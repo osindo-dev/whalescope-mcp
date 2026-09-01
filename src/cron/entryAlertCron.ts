@@ -8,10 +8,11 @@
 // Reuse LANGSUNG runPipelineForSymbol (src/tools/fullPipeline.ts) -- decision
 // chain yang sama persis dengan whalescope_full_pipeline (LONG grid only,
 // TRADE/WATCH/NO_TRADE), bukan logic baru. Dedup alert (TRADE dan WATCH,
-// NO_TRADE gak pernah alert): kirim pas TRANSISI ke decision itu (termasuk
-// WATCH->TRADE atau sebaliknya, beda decision = alert baru), ATAU kalau
-// decision-nya SAMA kayak cycle lalu tapi cooldown 4 jam sejak alert
-// terakhir sudah lewat (reminder, bukan spam tiap tick).
+// NO_TRADE gak pernah alert): kunci composite encode *alert-worthy band*
+// (WATCH_MUTED vs WATCH vs WATCH_HIGH_RISK, DCA_WATCH_MUTED vs DCA_WATCH),
+// bukan cuma label keputusan engine. Kirim pas TRANSISI band, saat
+// lastAlertAt masih null (belum pernah kirim), ATAU cooldown 4 jam sejak
+// alert terakhir (reminder, bukan spam tiap tick).
 import {
   runTriplePipelineForSymbol,
   type PipelineOpts,
@@ -117,18 +118,43 @@ const DEFAULT_PIPELINE_OPTS: PipelineOpts = {
 
 const ALERTABLE_DECISIONS = new Set(["TRADE", "WATCH"]);
 
-// High-quality WATCH only: rankingScore 50-54. TRADE sudah dijamin
-// score >= 55 AND SAFE/MODERATE di decidePipelineOutcome. HIGH_RISK
-// tidak lagi bypass -- WATCH lemah (termasuk HIGH_RISK skor < 50) di-mute.
+// High-quality WATCH: rankingScore >= 50. TRADE sudah dijamin
+// score >= 55 AND SAFE/MODERATE di decidePipelineOutcome. WATCH SAFE/MODERATE
+// tetap di-cap < 55 (defensive -- pipeline nyata tidak emit WATCH di skor itu).
+// HIGH_RISK + skor >= 50 adalah jalur notif terpisah (bukan TRADE): sinyal
+// Tier-1 kuat tapi setup likuidasi/leverage berisiko. HIGH_RISK skor < 50
+// tetap di-mute. Tidak mengubah decidePipelineOutcome / ambang 55.
 export const WATCH_MIN_ALERT_SCORE = 50;
 // Dispatch floor terpisah dari engine DCA_WATCH_MIN_ALERT_SCORE (50) --
 // engine tetap boleh WATCH dari 50, Telegram cuma kirim >= 65.
 export const DCA_WATCH_TELEGRAM_MIN_SCORE = 65;
 
+function isHighRiskWatch(result: SymbolPipelineResult): boolean {
+  return result.decision === "WATCH" && result.risk?.gridRisk?.status === "HIGH_RISK";
+}
+
 function isGridAlertWorthy(result: SymbolPipelineResult): boolean {
   if (!ALERTABLE_DECISIONS.has(result.decision)) return false;
   if (result.decision === "TRADE") return true;
-  return result.rankingScore >= WATCH_MIN_ALERT_SCORE && result.rankingScore < TRADE_RANKING_SCORE_THRESHOLD;
+  if (result.rankingScore < WATCH_MIN_ALERT_SCORE) return false;
+  if (isHighRiskWatch(result)) return true;
+  return result.rankingScore < TRADE_RANKING_SCORE_THRESHOLD;
+}
+
+// Dedup slot = decision label + alert band. HQ WATCH tetap "WATCH" supaya
+// row D1 lama yang sudah pernah alert tidak di-spam ulang pas deploy.
+export function gridDedupSlot(result: SymbolPipelineResult): string {
+  if (result.decision === "TRADE") return "TRADE";
+  if (result.decision !== "WATCH") return result.decision;
+  if (!isGridAlertWorthy(result)) return "WATCH_MUTED";
+  if (isHighRiskWatch(result)) return "WATCH_HIGH_RISK";
+  return "WATCH";
+}
+
+export function dcaDedupSlot(dca: DcaHeadResult, dcaSm?: DcaSmartMoneyResult | null): string {
+  const decision = dcaSm?.decision ?? dca.decision;
+  if (decision === "DCA_WATCH" && !isDcaAlertWorthy(dca, dcaSm)) return "DCA_WATCH_MUTED";
+  return decision;
 }
 
 function dcaWatchScore(dca: DcaHeadResult, dcaSm?: DcaSmartMoneyResult | null): number {
@@ -180,13 +206,14 @@ function classifyAlertHeads(r: TriplePipelineResult, muteTrade: boolean): {
   return { gridOn, dcaOn, tradOn, alertable: gridOn || dcaOn || tradOn };
 }
 
-// Penanda Telegram: 🟢/🟡 grid (tak berubah), 🔵/🟠 DCA.
+// Penanda Telegram: 🟢 TRADE / 🟡 WATCH HQ / ⚠️ HIGH_RISK bersinyal-kuat; 🔵/🟠 DCA.
 const GRID_ICON: Record<string, string> = { TRADE: "🟢", WATCH: "🟡" };
 const DCA_ICON: Record<string, string> = { DCA_TRADE: "🔵", DCA_WATCH: "🟠", DCA_PAUSE_SOFT: "⏸️", DCA_PAUSE_HARD: "🧊", DCA_STOP: "🚨" };
 const GRID_LABEL: Record<string, string> = {
   TRADE: "GRID TRADE (grid entry, whale-aligned)",
   WATCH: "GRID WATCH (mendekati entry, belum layak)",
 };
+const GRID_HIGH_RISK_LABEL = "GRID HIGH_RISK (sinyal kuat, setup berisiko — jangan eksekusi)";
 const DCA_LABEL: Record<string, string> = {
   DCA_TRADE: "DCA LAYAK ENTRY",
   DCA_WATCH: "DCA TUNGGU",
@@ -194,6 +221,16 @@ const DCA_LABEL: Record<string, string> = {
   DCA_PAUSE_HARD: "DCA PAUSE HARD",
   DCA_STOP: "DCA PLAN INVALIDATED",
 };
+
+function gridHeadIcon(result: SymbolPipelineResult): string {
+  if (isHighRiskWatch(result)) return "⚠️";
+  return GRID_ICON[result.decision] ?? "";
+}
+
+function gridHeadLabel(result: SymbolPipelineResult): string {
+  if (isHighRiskWatch(result)) return GRID_HIGH_RISK_LABEL;
+  return GRID_LABEL[result.decision] ?? result.decision;
+}
 
 function formatEntryAlert(r: TriplePipelineResult, muteTrade = false): string {
   const { grid, dca, trad, dcaSm } = r;
@@ -204,9 +241,9 @@ function formatEntryAlert(r: TriplePipelineResult, muteTrade = false): string {
   const dcaHeadLabel = DCA_LABEL[dcaHeadDecision] ?? dcaHeadDecision;
 
   const headMarkers =
-    `${gridOn ? GRID_ICON[grid.decision] ?? "" : ""}${dcaOn ? DCA_ICON[dcaHeadDecision] ?? "" : ""}${tradOn ? "⚡" : ""}` || "ℹ️";
+    `${gridOn ? gridHeadIcon(grid) : ""}${dcaOn ? DCA_ICON[dcaHeadDecision] ?? "" : ""}${tradOn ? "⚡" : ""}` || "ℹ️";
   const headParts: string[] = [];
-  if (gridOn) headParts.push(escapeMarkdown(GRID_LABEL[grid.decision] ?? grid.decision));
+  if (gridOn) headParts.push(escapeMarkdown(gridHeadLabel(grid)));
   if (dcaOn) headParts.push(`${escapeMarkdown(dcaHeadLabel)}${dcaDir}`);
   if (tradOn) headParts.push(`TRADITIONAL FUTURES (${escapeMarkdown(`[SCENARIO: ${trad.scenario}]`)})`);
 
@@ -298,13 +335,11 @@ export async function checkEntryAlertForSymbol(
   }
   const previous = await d1Client.getEntryAlertState(symbol);
 
-  // Dedup: composite "grid/dca/trad" string. Transisi = string berubah (head
-  // mana pun flip -> alert gabungan yang nunjukin state ketiga head). Cooldown
-  // 4 jam pakai satu timestamp. Slot tengah pakai dcaSm.decision kalau ada
-  // supaya PAUSE_SOFT (yang tidak alert) -> TRADE/WATCH tetap ketahuan
-  // sebagai transisi, bukan tertelan cooldown slot legacy.
-  const dcaSlot = dcaHeadDecision(r);
-  const composite = `${r.grid.decision}/${dcaSlot}/${r.trad.decision}`;
+  // Dedup: composite "gridBand/dcaBand/trad". Transisi = band berubah
+  // (WATCH_MUTED→WATCH, WATCH→WATCH_HIGH_RISK, PAUSE_SOFT→DCA_TRADE, dst).
+  // lastAlertAt == null + alertable = belum pernah kirim (termasuk row D1
+  // racun dari bug lama: label WATCH ditulis padahal skor di bawah floor).
+  const composite = `${gridDedupSlot(r.grid)}/${dcaDedupSlot(r.dca, r.dcaSm)}/${r.trad.decision}`;
   const muteTrade = await riskCircuit.isDailyLossCircuitOpen();
   const tradeHeads = countTradeHeads(r);
   if (muteTrade && tradeHeads > 0) {
@@ -312,6 +347,7 @@ export async function checkEntryAlertForSymbol(
   }
   const { alertable } = classifyAlertHeads(r, muteTrade);
   const isTransition = alertable && previous?.lastDecision !== composite;
+  const neverAlerted = alertable && previous?.lastAlertAt == null;
   const cooldownExpired =
     alertable && previous?.lastAlertAt != null && now - previous.lastAlertAt > COOLDOWN_MS;
 
@@ -323,7 +359,7 @@ export async function checkEntryAlertForSymbol(
     decisionLog: toPipelineDecisionLogRow(r.grid, now, "entry_alert"),
   };
 
-  if (alertable && (isTransition || cooldownExpired)) {
+  if (alertable && (isTransition || cooldownExpired || neverAlerted)) {
     await sendTelegramAlert(env, formatEntryAlert(r, muteTrade));
     await d1Client.upsertEntryAlertState({ symbol, lastDecision: composite, lastAlertAt: now });
     if (!muteTrade && tradeHeads > 0) {
