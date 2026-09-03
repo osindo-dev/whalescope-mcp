@@ -94,13 +94,15 @@ export const SNAPSHOT_WATCHLIST = [
 // subset 15 pair pertama dari SNAPSHOT_WATCHLIST (market cap tertinggi),
 // BUKAN full 50. Cut manual, bukan adaptive filter (lihat Task F -- adaptive
 // tiering butuh state-management yang gak sepadan buat pengurangan marginal
-// di atas cut statis ini). Alasan: WALL_SCAN adalah ~95% driver overage
-// Vercel Hobby (240% limit invocation/bulan) karena getOrderBookDepth
+// di atas cut statis ini). Alasan: WALL_SCAN adalah driver besar overage
+// Vercel Hobby (Edge Requests 1 juta/bulan) karena getOrderBookDepth
 // NO_CACHE by design (butuh snapshot-to-snapshot real, gak bisa di-cache).
 // 15 pair x 1 call/menit x 43.200 menit/bulan = 648.000 call/bulan (vs 50
-// pair = 2.160.000/bulan) -- reduksi ~70%. SNAPSHOT_WATCHLIST (cron 5-menit,
-// signal_history/market_snapshots) TETAP 50 pair, TIDAK disentuh -- array
-// ini urutan-subset, bukan pengganti.
+// pair = 2.160.000/bulan) -- reduksi ~70%, TAPI 648k wall-scan + pipeline
+// entry-alert tetap bisa menghabiskan Hobby dalam beberapa hari (insiden
+// 2026-09-03). Catatan untuk project serupa: docs/vercel_hobby_quota.md.
+// SNAPSHOT_WATCHLIST (cron 5-menit, signal_history/market_snapshots) TETAP
+// 50 pair, TIDAK disentuh -- array ini urutan-subset, bukan pengganti.
 export const WALL_SCAN_WATCHLIST = SNAPSHOT_WATCHLIST.slice(0, 15);
 
 // Address wallet whale Hyperliquid yang di-poll cron tiap 15 menit

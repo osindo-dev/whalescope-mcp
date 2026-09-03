@@ -59,9 +59,10 @@ conversation with Claude, without needing a separate exchange dashboard.
   touches a Binance account or any third-party data.
 - Transparent about each tool's limitations (see the section below), not
   glossed over as if all data were perfect.
-- Infrastructure fits comfortably in free tiers (Cloudflare Workers +
-  Vercel Hobby) for personal use — 100% Binance-native, no third-party
-  aggregator dependency anymore.
+- Infrastructure: Cloudflare Workers free tier is enough for personal use.
+  **Vercel Hobby as a Binance proxy is not automatically enough** — the
+  1M Edge Requests/month cap can burn in days under a dense cron (see
+  [`docs/vercel_hobby_quota.en.md`](docs/vercel_hobby_quota.en.md)).
 
 ## Weaknesses
 
@@ -80,7 +81,10 @@ conversation with Claude, without needing a separate exchange dashboard.
   `binance_detect_mm_activity` (a 3rd, price-anchored, hunt-side proxy). No
   long liquidation history (24h buffer).
 - **Initial setup needs a Vercel proxy** (required) — not plug-and-play,
-  there's a one-time manual configuration step.
+  there's a one-time manual configuration step. Hobby's 1M Edge
+  Requests/month is **not** a “safe for a 1-minute cron” quota; do the
+  math first
+  ([`docs/vercel_hobby_quota.en.md`](docs/vercel_hobby_quota.en.md)).
 - No on-chain wallet data, and no data from exchanges other than Binance
   Futures USDS-M.
 
@@ -415,7 +419,9 @@ immediately on failure).
 
 1. Deploy a SECOND Vercel instance from the same `proxy/` folder (a
    different region if you like, e.g. Hong Kong vs Singapore) with its own
-   `PROXY_SECRET` (can differ from the primary).
+   `PROXY_SECRET` (can differ from the primary). **Do not** put both on
+   the same Hobby team — they share the 1M Edge Request pool; see
+   [`docs/vercel_hobby_quota.en.md`](docs/vercel_hobby_quota.en.md).
 2. Set two additional secrets:
    ```bash
    npx wrangler secret put PROXY_URL_2
@@ -749,12 +755,16 @@ so the numbers are approximate — useful for relative comparison
 
 - Cloudflare Workers: free tier of 100,000 requests/day — far more than
   enough for personal trading-analysis use.
-- Vercel (proxy relay): the Hobby free tier covers millions of serverless
-  function invocations/month — won't incur cost for personal use. Note:
+- Vercel (proxy relay): Hobby includes **1M Edge Requests/month**, not
+  “millions of invocations you will never hit.” A dense cron (1-minute
+  wall scan, many-pair pipeline) can burn that in a few days. Failed
+  requests (401/403) still count. Note for similar projects:
+  [`docs/vercel_hobby_quota.en.md`](docs/vercel_hobby_quota.en.md).
   `PROXY_SECRET` must be kept confidential, since anyone who knows the URL
   + secret can use this proxy's quota on your behalf.
 
-You will most likely never be charged on either platform for personal use.
+Hobby + Workers free is **not** a guarantee you will “never be charged /
+never hit a cap” for a relay + cron pattern.
 
 ## Disclaimer
 

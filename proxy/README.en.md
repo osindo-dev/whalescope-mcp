@@ -91,3 +91,19 @@ To add a new path, edit the relevant market's whitelist in
 proxy without a whitelist, so this proxy can't become a backdoor for
 fetching any Binance endpoint (including trading/private endpoints that
 require an API key, which must NOT go through a public proxy like this).
+
+## Vercel Hobby quota (read before copying this pattern)
+
+Hobby is **not** enough for a dense cron. The limit that trips is **Edge
+Requests (1M/month)**, not CPU. One HTTP hit to the function — including
+401/403/429 — still counts. Two projects on the same Hobby team share
+that pool.
+
+Do the math first: `calls_per_tick × ticks_per_day × 30`. If the result
+is near or above 1M, do not deploy to Hobby assuming “personal use is
+fine.”
+
+Real incident (this proxy, 3 Sep 2026): 1M Edge Requests gone in ~5 days
+(~180–200k/day) from a 1-minute wall scan + the entry-alert pipeline +
+primary 401s that still hit Vercel. Full note for similar projects:
+[`docs/vercel_hobby_quota.en.md`](../docs/vercel_hobby_quota.en.md).

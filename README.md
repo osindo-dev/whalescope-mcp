@@ -57,9 +57,10 @@ dalam percakapan dengan Claude, tanpa perlu buka dashboard exchange terpisah.
   akun Binance/data pihak luar sama sekali.
 - Transparan soal keterbatasan tiap tool (lihat bagian di bawah), bukan
   dibungkus seolah semua data sempurna.
-- Infrastruktur cukup dengan free tier (Cloudflare Workers + Vercel Hobby)
-  untuk pemakaian personal — 100% Binance-native, tidak ada dependensi
-  agregator pihak ketiga lagi.
+- Infrastruktur Cloudflare Workers free tier cukup untuk pemakaian
+  personal. **Vercel Hobby sebagai proxy Binance tidak otomatis cukup** —
+  Edge Requests 1 juta/bulan habis dalam hitungan hari kalau cron padat
+  (lihat [`docs/vercel_hobby_quota.md`](docs/vercel_hobby_quota.md)).
 
 ## Kekurangan
 
@@ -78,7 +79,9 @@ dalam percakapan dengan Claude, tanpa perlu buka dashboard exchange terpisah.
   ke-3, price-anchored & sisi-hunt). Tidak ada histori liquidation jauh ke
   belakang (buffer 24 jam).
 - **Setup awal butuh proxy Vercel** (wajib) — bukan pasang-langsung-jalan,
-  ada langkah konfigurasi manual sekali di awal.
+  ada langkah konfigurasi manual sekali di awal. Hobby 1 juta Edge
+  Requests/bulan **bukan** kuota “aman untuk cron 1 menit”; hitung dulu
+  ([`docs/vercel_hobby_quota.md`](docs/vercel_hobby_quota.md)).
 - Tidak ada data wallet on-chain atau data dari exchange selain Binance
   Futures USDS-M.
 
@@ -405,7 +408,9 @@ sama seperti sebelumnya (1 proxy, error langsung dilempar kalau gagal).
 
 1. Deploy instance Vercel KEDUA dari folder `proxy/` yang sama (region
    beda kalau mau, misal Hong Kong vs Singapore) dengan `PROXY_SECRET`
-   sendiri (boleh beda dari primary).
+   sendiri (boleh beda dari primary). **Jangan** taruh keduanya di tim
+   Hobby yang sama — kuota 1 juta Edge Requests dipakai bersama; lihat
+   [`docs/vercel_hobby_quota.md`](docs/vercel_hobby_quota.md).
 2. Set dua secret tambahan:
    ```bash
    npx wrangler secret put PROXY_URL_2
@@ -731,13 +736,16 @@ sesudah perubahan), bukan angka token exact.
 
 - Cloudflare Workers: free tier 100.000 request/hari — untuk pemakaian
   personal trading analysis ini jauh dari cukup.
-- Vercel (proxy relay): free tier Hobby plan mencakup jutaan invocation/bulan
-  untuk serverless function — tidak akan kena biaya untuk pemakaian personal.
-  Perhatikan: `PROXY_SECRET` wajib dijaga kerahasiaannya, karena siapapun
-  yang tahu URL + secret bisa memakai quota proxy ini atas nama kamu.
+- Vercel (proxy relay): Hobby mencakup **1 juta Edge Requests/bulan**,
+  bukan “jutaan invocation yang tidak akan kena.” Cron padat (wall-scan
+  1 menit, pipeline banyak pair) bisa menghabiskan itu dalam beberapa
+  hari. Request gagal (401/403) tetap dihitung. Catatan untuk project
+  serupa: [`docs/vercel_hobby_quota.md`](docs/vercel_hobby_quota.md).
+  `PROXY_SECRET` wajib dijaga kerahasiaannya, karena siapapun yang tahu
+  URL + secret bisa memakai quota proxy ini atas nama kamu.
 
-Kemungkinan besar kamu tidak akan pernah kena biaya di kedua platform untuk
-pemakaian personal.
+Hobby + Workers free **bukan** jaminan “tidak akan pernah kena biaya /
+tidak akan mentok” untuk pola relay + cron.
 
 ## Disclaimer
 
