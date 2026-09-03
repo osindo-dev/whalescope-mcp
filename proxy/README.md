@@ -87,3 +87,19 @@ Untuk menambah path baru, edit whitelist market yang relevan di
 tanpa whitelist, supaya proxy ini tidak jadi pintu belakang buat fetch
 endpoint Binance apapun (termasuk endpoint trading/private yang butuh API
 key, yang TIDAK boleh lewat proxy publik seperti ini).
+
+## Kuota Vercel Hobby (baca sebelum copy pola ini)
+
+Hobby **bukan** cukup untuk cron padat. Yang mentok adalah **Edge
+Requests (1 juta/bulan)**, bukan CPU. Satu hit HTTP ke function — termasuk
+401/403/429 — tetap dihitung. Dua project di tim Hobby yang sama berbagi
+kolam itu.
+
+Hitung dulu: `call_per_tick × tick_per_hari × 30`. Kalau hasilnya dekat
+atau di atas 1 juta, jangan deploy ke Hobby dengan asumsi “pemakaian
+personal aman.”
+
+Insiden nyata (proxy ini, 3 Sep 2026): 1 juta Edge Requests habis dalam
+~5 hari (~180–200 ribu/hari) karena wall-scan 1 menit + pipeline
+entry-alert + primary 401 yang tetap memukul Vercel. Catatan lengkap
+untuk project serupa: [`docs/vercel_hobby_quota.md`](../docs/vercel_hobby_quota.md).
